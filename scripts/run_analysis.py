@@ -33,7 +33,7 @@ from regime_switching.data import (  # noqa: E402
     download_prices,
     engineer_features,
 )
-from regime_switching.estimation import fit_multistart  # noqa: E402
+from regime_switching.hmm import GaussianHMM  # noqa: E402
 from regime_switching.metrics import summary  # noqa: E402
 from regime_switching.plots import (  # noqa: E402
     plot_equity_curves,
@@ -77,12 +77,16 @@ def main() -> None:
     dates = feats["date"].to_numpy()
 
     # 2. fit on the full sample for interpretation (in-sample decode)
-    result = fit_multistart(log_returns, args.states, rng, n_starts=10)
-    model = result.model
-    logger.info("fitted loglik=%.2f, converged=%s", result.loglik, result.converged)
+    model = GaussianHMM(
+        n_states=args.states, n_init=10, random_state=args.seed
+    ).fit(log_returns)
+    logger.info(
+        "fitted loglik=%.2f, converged=%s", model.loglik_, model.converged_
+    )
+    logger.info("\n%s", model.summary())
 
-    pi = stationary_distribution(model.transmat)
-    dur = expected_durations(model.transmat)
+    pi = stationary_distribution(model.transmat_)
+    dur = expected_durations(model.transmat_)
     logger.info("stationary distribution: %s", np.round(pi, 3))
     logger.info("expected durations (days): %s", np.round(dur, 1))
 
@@ -109,7 +113,7 @@ def main() -> None:
     fig.savefig(figdir / "regime_probabilities.png", dpi=120, bbox_inches="tight")
 
     fig, ax = plt.subplots(figsize=(5, 4))
-    plot_transition_matrix(model.transmat, ax=ax)
+    plot_transition_matrix(model.transmat_, ax=ax)
     fig.savefig(figdir / "transition_matrix.png", dpi=120, bbox_inches="tight")
 
     fig, ax = plt.subplots(figsize=(11, 4))

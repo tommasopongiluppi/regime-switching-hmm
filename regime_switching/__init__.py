@@ -13,8 +13,8 @@ from .chain import (
     n_step_transition,
     stationary_distribution,
 )
-from .estimation import EMResult, fit_baum_welch, fit_multistart
-from .hmm import GaussianHMM, gaussian_logpdf
+from .estimation import EMResult, fit_em, fit_em_single
+from .hmm import GaussianHMM
 from .inference import (
     filtered_log_probs,
     gaussian_log_emission,
@@ -39,11 +39,10 @@ __all__ = [
     "viterbi",
     # model
     "GaussianHMM",
-    "gaussian_logpdf",
     # estimation
     "EMResult",
-    "fit_baum_welch",
-    "fit_multistart",
+    "fit_em",
+    "fit_em_single",
     # chain analytics
     "stationary_distribution",
     "expected_durations",

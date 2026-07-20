@@ -12,7 +12,7 @@ from regime_switching.backtest import (
 
 def test_align_states_by_mean(two_state_model):
     order = align_states_by_mean(two_state_model)
-    means = two_state_model.means[order, 0]
+    means = two_state_model.means_[order]
     assert np.all(np.diff(means) >= 0)
 
 

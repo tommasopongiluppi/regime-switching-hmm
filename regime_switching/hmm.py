@@ -1,284 +1,478 @@
-"""Gaussian hidden Markov model.
+"""Univariate Gaussian hidden Markov model with an sklearn-style API.
 
-The :class:`GaussianHMM` bundles the model parameters (initial distribution,
-transition matrix, per-state Gaussian emissions) and exposes scoring,
-filtering, smoothing, and decoding built on the log-space routines in
-:mod:`regime_switching.inference`.
+:class:`GaussianHMM` fits a ``K``-state Gaussian HMM to a one-dimensional return
+series by multi-start Baum-Welch EM (see :mod:`regime_switching.estimation`) and
+exposes scoring, decoding, filtering, smoothing, sampling, model selection
+(AIC/BIC), JSON persistence, and a readable ``summary``.
 
-Transition matrix convention: ``transmat[i, j] = P(S_t = j | S_{t-1} = i)`` so
+Transition matrix convention: ``transmat_[i, j] = P(S_t = j | S_{t-1} = i)`` so
 rows sum to 1.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 
 import numpy as np
 
-from .inference import filtered_log_probs, log_backward, log_forward, log_gamma, viterbi
+from .chain import expected_durations
+from .estimation import fit_em
+from .inference import (
+    filtered_log_probs,
+    gaussian_log_emission,
+    log_backward,
+    log_forward,
+    log_gamma,
+    viterbi,
+)
 
-__all__ = ["GaussianHMM", "gaussian_logpdf"]
+__all__ = ["GaussianHMM"]
 
 logger = logging.getLogger(__name__)
 
-_LOG_2PI = float(np.log(2.0 * np.pi))
-
-
-def gaussian_logpdf(
-    x: np.ndarray,
-    means: np.ndarray,
-    covars: np.ndarray,
-) -> np.ndarray:
-    """Log-density of multivariate Gaussians evaluated on a batch.
-
-    Parameters
-    ----------
-    x : numpy.ndarray
-        Observations, shape ``(T, D)``.
-    means : numpy.ndarray
-        Per-state means, shape ``(K, D)``.
-    covars : numpy.ndarray
-        Per-state covariance matrices, shape ``(K, D, D)``.
-
-    Returns
-    -------
-    numpy.ndarray
-        Log-densities, shape ``(T, K)``, where entry ``[t, k]`` is
-        ``log N(x_t; means[k], covars[k])``.
-    """
-    x = np.asarray(x, dtype=np.float64)
-    means = np.asarray(means, dtype=np.float64)
-    covars = np.asarray(covars, dtype=np.float64)
-
-    n_obs, n_dim = x.shape
-    n_states = means.shape[0]
-    out = np.empty((n_obs, n_states), dtype=np.float64)
-
-    for k in range(n_states):
-        cov = covars[k]
-        # Cholesky-based log-density for numerical stability.
-        chol = np.linalg.cholesky(cov)
-        log_det = 2.0 * np.sum(np.log(np.diag(chol)))
-        diff = x - means[k]  # (T, D)
-        # solve L z = diff^T  ->  Mahalanobis distance = sum z**2
-        solved = _solve_lower(chol, diff.T)
-        maha = np.sum(solved**2, axis=0)  # (T,)
-        out[:, k] = -0.5 * (n_dim * _LOG_2PI + log_det + maha)
-    return out
-
-
-def _solve_lower(chol: np.ndarray, rhs: np.ndarray) -> np.ndarray:
-    """Solve ``L z = rhs`` for lower-triangular ``L`` via SciPy if available.
-
-    Falls back to :func:`numpy.linalg.solve` when SciPy is not importable.
-    """
-    from scipy.linalg import solve_triangular
-
-    return solve_triangular(chol, rhs, lower=True)
+_FITTED_ATTRS = (
+    "startprob_",
+    "transmat_",
+    "means_",
+    "variances_",
+    "loglik_",
+    "converged_",
+    "n_iter_",
+    "loglik_trace_",
+    "all_traces_",
+)
 
 
 class GaussianHMM:
-    """Gaussian hidden Markov model with full covariance emissions.
+    """Multi-start Baum-Welch Gaussian HMM for univariate returns.
 
     Parameters
     ----------
-    startprob : numpy.ndarray
-        Initial state distribution, shape ``(K,)``. Sums to 1.
-    transmat : numpy.ndarray
-        Transition matrix, shape ``(K, K)``, ``transmat[i, j] =
-        P(S_t = j | S_{t-1} = i)``. Rows sum to 1.
-    means : numpy.ndarray
-        Per-state means, shape ``(K, D)``.
-    covars : numpy.ndarray
-        Per-state covariance matrices, shape ``(K, D, D)``.
+    n_states : int, optional
+        Number of hidden states ``K``. Must be ``>= 1``.
+    n_iter : int, optional
+        Maximum EM iterations per initialisation.
+    tol : float, optional
+        Convergence threshold on the relative log-likelihood change.
+    n_init : int, optional
+        Number of random initialisations (multi-start).
+    var_floor : float, optional
+        Lower bound on every state variance.
+    random_state : int, numpy.random.Generator, or None, optional
+        Seed or generator controlling initialisation.
 
     Attributes
     ----------
-    n_states : int
-        Number of hidden states ``K``.
-    n_dim : int
-        Observation dimension ``D``.
+    startprob_ : numpy.ndarray
+        Fitted initial distribution, shape ``(K,)``.
+    transmat_ : numpy.ndarray
+        Fitted transition matrix, shape ``(K, K)``.
+    means_ : numpy.ndarray
+        Fitted state means, shape ``(K,)``, sorted by ascending variance.
+    variances_ : numpy.ndarray
+        Fitted state variances, shape ``(K,)``, ascending.
+    loglik_ : float
+        Log-likelihood of the best fit.
+    converged_ : bool
+        Whether the best fit converged.
+    n_iter_ : int
+        Iterations taken by the best fit.
+    loglik_trace_ : list of float
+        Log-likelihood trace of the best fit.
+    all_traces_ : list of list of float
+        Log-likelihood traces of every initialisation.
     """
 
     def __init__(
         self,
+        n_states: int = 2,
+        n_iter: int = 500,
+        tol: float = 1e-8,
+        n_init: int = 20,
+        var_floor: float = 1e-10,
+        random_state: int | np.random.Generator | None = None,
+    ) -> None:
+        if n_states < 1:
+            raise ValueError(f"n_states must be >= 1, got {n_states}")
+        self.n_states = int(n_states)
+        self.n_iter = int(n_iter)
+        self.tol = float(tol)
+        self.n_init = int(n_init)
+        self.var_floor = float(var_floor)
+        self.random_state = random_state
+
+    # ------------------------------------------------------------------ utils
+    @staticmethod
+    def _check_1d(x: np.ndarray) -> np.ndarray:
+        """Validate and return a 1-D float64 observation array."""
+        x = np.asarray(x, dtype=np.float64)
+        if x.ndim != 1:
+            x = x.ravel()
+        if not np.all(np.isfinite(x)):
+            raise ValueError("X contains NaN or inf; clean the series first")
+        return x
+
+    def _check_fitted(self) -> None:
+        if not hasattr(self, "startprob_"):
+            raise RuntimeError(
+                "model is not fitted; call fit(X) before this method"
+            )
+
+    def _log_params(self) -> tuple[np.ndarray, np.ndarray]:
+        """Log start and transition parameters, with -inf where a prob is 0."""
+        with np.errstate(divide="ignore"):
+            return np.log(self.startprob_), np.log(self.transmat_)
+
+    @classmethod
+    def from_params(
+        cls,
         startprob: np.ndarray,
         transmat: np.ndarray,
         means: np.ndarray,
-        covars: np.ndarray,
-    ) -> None:
-        self.startprob = np.asarray(startprob, dtype=np.float64)
-        self.transmat = np.asarray(transmat, dtype=np.float64)
-        self.means = np.asarray(means, dtype=np.float64)
-        self.covars = np.asarray(covars, dtype=np.float64)
-        self._validate()
+        variances: np.ndarray,
+    ) -> GaussianHMM:
+        """Build a fitted model directly from known parameters.
 
-    # ------------------------------------------------------------------ utils
-    def _validate(self) -> None:
-        k = self.startprob.shape[0]
-        if self.transmat.shape != (k, k):
-            raise ValueError(
-                f"transmat must be ({k}, {k}), got {self.transmat.shape}"
-            )
-        if self.means.shape[0] != k:
-            raise ValueError("means must have K rows")
-        if self.covars.shape[0] != k:
-            raise ValueError("covars must have K entries")
-        if not np.allclose(self.startprob.sum(), 1.0, atol=1e-6):
-            raise ValueError("startprob must sum to 1")
-        if not np.allclose(self.transmat.sum(axis=1), 1.0, atol=1e-6):
-            raise ValueError("transmat rows must sum to 1")
-
-    @property
-    def n_states(self) -> int:
-        """Number of hidden states ``K``."""
-        return self.startprob.shape[0]
-
-    @property
-    def n_dim(self) -> int:
-        """Observation dimension ``D``."""
-        return self.means.shape[1]
-
-    @staticmethod
-    def _as_2d(x: np.ndarray) -> np.ndarray:
-        """Coerce ``(T,)`` observations to ``(T, 1)``; leave ``(T, D)`` as is."""
-        x = np.asarray(x, dtype=np.float64)
-        if x.ndim == 1:
-            x = x[:, None]
-        return x
-
-    # --------------------------------------------------------------- emissions
-    def log_emission(self, x: np.ndarray) -> np.ndarray:
-        """Per-state log emission likelihoods.
+        Useful for simulation and testing. The returned model is treated as
+        fitted (its ``*_`` attributes are populated) but carries no EM history.
 
         Parameters
         ----------
-        x : numpy.ndarray
-            Observations, shape ``(T,)`` or ``(T, D)``.
+        startprob : numpy.ndarray
+            Initial distribution, shape ``(K,)``.
+        transmat : numpy.ndarray
+            Transition matrix, shape ``(K, K)``.
+        means : numpy.ndarray
+            State means, shape ``(K,)``.
+        variances : numpy.ndarray
+            State variances, shape ``(K,)``.
 
         Returns
         -------
-        numpy.ndarray
-            Log-likelihoods, shape ``(T, K)``.
+        GaussianHMM
+            A model with the given parameters set as fitted attributes.
         """
-        return gaussian_logpdf(self._as_2d(x), self.means, self.covars)
+        startprob = np.asarray(startprob, dtype=np.float64)
+        transmat = np.asarray(transmat, dtype=np.float64)
+        means = np.asarray(means, dtype=np.float64)
+        variances = np.asarray(variances, dtype=np.float64)
+        k = startprob.shape[0]
+        obj = cls(n_states=k)
+        obj.startprob_ = startprob
+        obj.transmat_ = transmat
+        obj.means_ = means
+        obj.variances_ = variances
+        obj.loglik_ = float("nan")
+        obj.converged_ = False
+        obj.n_iter_ = 0
+        obj.loglik_trace_ = []
+        obj.all_traces_ = []
+        return obj
 
-    # ----------------------------------------------------------------- scoring
-    def score(self, x: np.ndarray) -> float:
-        """Total log-likelihood ``log P(x_1, ..., x_T)``.
+    # -------------------------------------------------------------------- fit
+    def fit(self, X: np.ndarray) -> GaussianHMM:
+        """Fit the model to a univariate return series by multi-start EM.
 
         Parameters
         ----------
-        x : numpy.ndarray
-            Observations, shape ``(T,)`` or ``(T, D)``.
+        X : numpy.ndarray
+            Observations, shape ``(T,)``.
+
+        Returns
+        -------
+        GaussianHMM
+            ``self``, fitted.
+        """
+        x = self._check_1d(X)
+        if x.shape[0] < 10 * self.n_states:
+            raise ValueError(
+                f"need at least 10*K = {10 * self.n_states} observations for "
+                f"K={self.n_states}, got {x.shape[0]}"
+            )
+
+        best, all_traces = fit_em(
+            x,
+            self.n_states,
+            n_iter=self.n_iter,
+            tol=self.tol,
+            n_init=self.n_init,
+            var_floor=self.var_floor,
+            random_state=self.random_state,
+        )
+        self.startprob_ = best.startprob
+        self.transmat_ = best.transmat
+        self.means_ = best.means
+        self.variances_ = best.variances
+        self.loglik_ = best.loglik
+        self.converged_ = best.converged
+        self.n_iter_ = best.n_iter
+        self.loglik_trace_ = best.loglik_trace
+        self.all_traces_ = all_traces
+        return self
+
+    # ---------------------------------------------------------------- scoring
+    def _log_emission(self, x: np.ndarray) -> np.ndarray:
+        return gaussian_log_emission(x, self.means_, self.variances_)
+
+    def score(self, X: np.ndarray) -> float:
+        """Log-likelihood ``log P(X)`` under the fitted model.
+
+        Parameters
+        ----------
+        X : numpy.ndarray
+            Observations, shape ``(T,)``.
 
         Returns
         -------
         float
             Sequence log-likelihood.
         """
-        log_b = self.log_emission(x)
-        _, loglik = log_forward(np.log(self.startprob), np.log(self.transmat), log_b)
+        self._check_fitted()
+        x = self._check_1d(X)
+        log_sp, log_tm = self._log_params()
+        _, loglik = log_forward(log_sp, log_tm, self._log_emission(x))
         return loglik
 
-    def filter(self, x: np.ndarray) -> tuple[np.ndarray, float]:
-        """Causal filtered state probabilities ``P(S_t | x_1, ..., x_t)``.
-
-        These are **causal**: each row conditions only on observations up to and
-        including time ``t``. This is the signal to use in a backtest.
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        """Most likely state path via Viterbi decoding.
 
         Parameters
         ----------
-        x : numpy.ndarray
-            Observations, shape ``(T,)`` or ``(T, D)``.
-
-        Returns
-        -------
-        filtered : numpy.ndarray
-            Filtered probabilities, shape ``(T, K)``. Rows sum to 1.
-        loglik : float
-            Sequence log-likelihood.
-        """
-        log_b = self.log_emission(x)
-        log_alpha, loglik = log_forward(
-            np.log(self.startprob), np.log(self.transmat), log_b
-        )
-        # normalise each row: P(S_t | x_1..t) = softmax over states of alpha_t
-        return np.exp(filtered_log_probs(log_alpha)), loglik
-
-    def predict_proba(self, x: np.ndarray) -> np.ndarray:
-        """Smoothed posterior probabilities ``P(S_t | x_1, ..., x_T)``.
-
-        These are **non-causal** (they use the full sequence, including the
-        future). Do not use as a trading signal.
-
-        Parameters
-        ----------
-        x : numpy.ndarray
-            Observations, shape ``(T,)`` or ``(T, D)``.
-
-        Returns
-        -------
-        numpy.ndarray
-            Smoothed posteriors, shape ``(T, K)``. Rows sum to 1.
-        """
-        log_b = self.log_emission(x)
-        log_a, _ = log_forward(np.log(self.startprob), np.log(self.transmat), log_b)
-        log_be = log_backward(np.log(self.transmat), log_b)
-        return np.exp(log_gamma(log_a, log_be))
-
-    def predict(self, x: np.ndarray) -> np.ndarray:
-        """Most-likely state path via Viterbi decoding.
-
-        Parameters
-        ----------
-        x : numpy.ndarray
-            Observations, shape ``(T,)`` or ``(T, D)``.
+        X : numpy.ndarray
+            Observations, shape ``(T,)``.
 
         Returns
         -------
         numpy.ndarray
             Integer state sequence, shape ``(T,)``.
         """
-        log_b = self.log_emission(x)
-        path, _ = viterbi(
-            np.log(self.startprob), np.log(self.transmat), log_b
-        )
+        self._check_fitted()
+        x = self._check_1d(X)
+        log_sp, log_tm = self._log_params()
+        path, _ = viterbi(log_sp, log_tm, self._log_emission(x))
         return path
 
-    # ---------------------------------------------------------------- sampling
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        """Smoothed state posteriors ``P(S_t | X)``.
+
+        Non-causal (conditions on the whole sequence). Use :meth:`filter` for a
+        trading signal.
+
+        Parameters
+        ----------
+        X : numpy.ndarray
+            Observations, shape ``(T,)``.
+
+        Returns
+        -------
+        numpy.ndarray
+            Smoothed posteriors, shape ``(T, K)``.
+        """
+        self._check_fitted()
+        x = self._check_1d(X)
+        log_sp, log_tm = self._log_params()
+        log_em = self._log_emission(x)
+        log_a, _ = log_forward(log_sp, log_tm, log_em)
+        log_b = log_backward(log_tm, log_em)
+        return np.exp(log_gamma(log_a, log_b))
+
+    def filter(self, X: np.ndarray) -> np.ndarray:
+        """Filtered state probabilities ``P(S_t | X_0, ..., X_t)``.
+
+        Causal: each row conditions only on data up to and including time ``t``.
+        This is the trading-safe state estimate (see
+        :func:`~regime_switching.inference.filtered_log_probs`).
+
+        Parameters
+        ----------
+        X : numpy.ndarray
+            Observations, shape ``(T,)``.
+
+        Returns
+        -------
+        numpy.ndarray
+            Filtered posteriors, shape ``(T, K)``.
+        """
+        self._check_fitted()
+        x = self._check_1d(X)
+        log_sp, log_tm = self._log_params()
+        log_a, _ = log_forward(log_sp, log_tm, self._log_emission(x))
+        return np.exp(filtered_log_probs(log_a))
+
+    # --------------------------------------------------------------- sampling
     def sample(
         self, n_samples: int, rng: np.random.Generator
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Draw a sample path and observations from the model.
+        """Draw observations and hidden states from the fitted model.
 
         Parameters
         ----------
         n_samples : int
-            Number of time steps ``T`` to generate.
+            Number of steps ``T`` to generate.
         rng : numpy.random.Generator
-            Explicit random generator. Global ``numpy.random`` state is never
-            used.
+            Explicit generator (global ``numpy.random`` state is never used).
 
         Returns
         -------
-        x : numpy.ndarray
-            Observations, shape ``(T, D)``.
+        X : numpy.ndarray
+            Observations, shape ``(T,)``.
         states : numpy.ndarray
             Hidden state sequence, shape ``(T,)``.
         """
+        self._check_fitted()
         states = np.empty(n_samples, dtype=np.int64)
-        x = np.empty((n_samples, self.n_dim), dtype=np.float64)
+        x = np.empty(n_samples, dtype=np.float64)
+        sds = np.sqrt(self.variances_)
 
-        states[0] = rng.choice(self.n_states, p=self.startprob)
+        states[0] = rng.choice(self.n_states, p=self.startprob_)
         for t in range(1, n_samples):
-            states[t] = rng.choice(self.n_states, p=self.transmat[states[t - 1]])
+            states[t] = rng.choice(self.n_states, p=self.transmat_[states[t - 1]])
         for t in range(n_samples):
             k = states[t]
-            x[t] = rng.multivariate_normal(self.means[k], self.covars[k])
+            x[t] = rng.normal(self.means_[k], sds[k])
         return x, states
 
-    def __repr__(self) -> str:
-        return (
-            f"GaussianHMM(n_states={self.n_states}, n_dim={self.n_dim})"
+    # -------------------------------------------------------- model selection
+    def _n_parameters(self) -> int:
+        """Number of free parameters: (K-1) + K(K-1) + K + K."""
+        k = self.n_states
+        return (k - 1) + k * (k - 1) + 2 * k
+
+    def aic(self, X: np.ndarray) -> float:
+        """Akaike information criterion ``2p - 2 logL``.
+
+        Parameters
+        ----------
+        X : numpy.ndarray
+            Observations, shape ``(T,)``.
+
+        Returns
+        -------
+        float
+            AIC (lower is better).
+        """
+        self._check_fitted()
+        return 2.0 * self._n_parameters() - 2.0 * self.score(X)
+
+    def bic(self, X: np.ndarray) -> float:
+        """Bayesian information criterion ``p log T - 2 logL``.
+
+        Parameters
+        ----------
+        X : numpy.ndarray
+            Observations, shape ``(T,)``.
+
+        Returns
+        -------
+        float
+            BIC (lower is better).
+        """
+        self._check_fitted()
+        x = self._check_1d(X)
+        return self._n_parameters() * np.log(x.shape[0]) - 2.0 * self.score(x)
+
+    # ------------------------------------------------------------- persistence
+    def save(self, path: str | Path) -> None:
+        """Serialise the fitted model to JSON.
+
+        Parameters
+        ----------
+        path : str or pathlib.Path
+            Destination file.
+        """
+        self._check_fitted()
+        payload = {
+            "hyperparams": {
+                "n_states": self.n_states,
+                "n_iter": self.n_iter,
+                "tol": self.tol,
+                "n_init": self.n_init,
+                "var_floor": self.var_floor,
+            },
+            "startprob_": self.startprob_.tolist(),
+            "transmat_": self.transmat_.tolist(),
+            "means_": self.means_.tolist(),
+            "variances_": self.variances_.tolist(),
+            "loglik_": self.loglik_,
+            "converged_": bool(self.converged_),
+            "n_iter_": int(self.n_iter_),
+            "loglik_trace_": list(self.loglik_trace_),
+            "all_traces_": [list(t) for t in self.all_traces_],
+        }
+        Path(path).write_text(json.dumps(payload, indent=2))
+
+    @classmethod
+    def load(cls, path: str | Path) -> GaussianHMM:
+        """Load a model previously written by :meth:`save`.
+
+        Parameters
+        ----------
+        path : str or pathlib.Path
+            Source JSON file.
+
+        Returns
+        -------
+        GaussianHMM
+            The reconstructed, fitted model.
+        """
+        payload = json.loads(Path(path).read_text())
+        hp = payload["hyperparams"]
+        obj = cls(
+            n_states=hp["n_states"],
+            n_iter=hp["n_iter"],
+            tol=hp["tol"],
+            n_init=hp["n_init"],
+            var_floor=hp["var_floor"],
         )
+        obj.startprob_ = np.asarray(payload["startprob_"], dtype=np.float64)
+        obj.transmat_ = np.asarray(payload["transmat_"], dtype=np.float64)
+        obj.means_ = np.asarray(payload["means_"], dtype=np.float64)
+        obj.variances_ = np.asarray(payload["variances_"], dtype=np.float64)
+        obj.loglik_ = float(payload["loglik_"])
+        obj.converged_ = bool(payload["converged_"])
+        obj.n_iter_ = int(payload["n_iter_"])
+        obj.loglik_trace_ = list(payload["loglik_trace_"])
+        obj.all_traces_ = [list(t) for t in payload["all_traces_"]]
+        return obj
+
+    # ------------------------------------------------------------------ report
+    def summary(self) -> str:
+        """Readable parameter table including implied expected durations.
+
+        Returns
+        -------
+        str
+            A multi-line summary of the fitted parameters. The expected duration
+            of state ``i`` is ``1 / (1 - transmat_[i, i])`` time steps.
+        """
+        self._check_fitted()
+        durations = expected_durations(self.transmat_)
+        lines = [
+            f"GaussianHMM(n_states={self.n_states})  "
+            f"loglik={self.loglik_:.4f}  converged={self.converged_}",
+            "",
+            f"{'state':>5} {'startprob':>10} {'mean':>12} {'std':>12} "
+            f"{'self-trans':>11} {'exp_dur':>9}",
+        ]
+        for i in range(self.n_states):
+            lines.append(
+                f"{i:>5} {self.startprob_[i]:>10.4f} {self.means_[i]:>12.6f} "
+                f"{np.sqrt(self.variances_[i]):>12.6f} "
+                f"{self.transmat_[i, i]:>11.4f} {durations[i]:>9.1f}"
+            )
+        lines.append("")
+        lines.append("transition matrix P(S_t=j | S_{t-1}=i):")
+        for i in range(self.n_states):
+            row = " ".join(f"{self.transmat_[i, j]:.4f}" for j in range(self.n_states))
+            lines.append(f"  {i}: {row}")
+        return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        if hasattr(self, "startprob_"):
+            return (
+                f"GaussianHMM(n_states={self.n_states}, fitted, "
+                f"loglik={self.loglik_:.2f})"
+            )
+        return f"GaussianHMM(n_states={self.n_states}, unfitted)"

@@ -15,7 +15,6 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .estimation import fit_multistart
 from .hmm import GaussianHMM
 
 __all__ = ["BacktestResult", "walk_forward_backtest", "align_states_by_mean"]
@@ -53,9 +52,9 @@ class BacktestResult:
 def align_states_by_mean(model: GaussianHMM) -> np.ndarray:
     """Order state indices by ascending emission mean (first feature).
 
-    Baum-Welch labels states arbitrarily, so a fitted model's state ``0`` is not
-    comparable across refits. This returns a permutation that sorts states from
-    lowest to highest mean of the first observation dimension, giving a stable
+    A fitted model sorts its states by ascending variance, which is not
+    necessarily the ordering we want for return direction. This returns a
+    permutation that sorts states from lowest to highest mean, giving a stable
     "bear -> bull" ordering for return data.
 
     Parameters
@@ -69,7 +68,7 @@ def align_states_by_mean(model: GaussianHMM) -> np.ndarray:
         Index array ``order`` of shape ``(K,)`` such that ``order[0]`` is the
         lowest-mean state.
     """
-    return np.argsort(model.means[:, 0])
+    return np.argsort(model.means_)
 
 
 def _default_position_rule(filtered_row: np.ndarray, order: np.ndarray) -> float:
@@ -105,19 +104,19 @@ def walk_forward_backtest(
     Parameters
     ----------
     observations : numpy.ndarray
-        Model input features, shape ``(T,)`` or ``(T, D)``.
+        Univariate model input series, shape ``(T,)``.
     asset_returns : numpy.ndarray
         Per-period asset returns aligned with ``observations``, shape ``(T,)``.
     n_states : int
         Number of hidden states ``K``.
     rng : numpy.random.Generator
-        Explicit generator passed through to estimation.
+        Explicit generator passed through to estimation as ``random_state``.
     train_size : int
         Number of observations in the initial (and rolling) training window.
     step : int, optional
         Number of out-of-sample periods between refits.
     n_starts : int, optional
-        Multi-start count for each refit.
+        Multi-start count (``n_init``) for each refit.
     position_rule : callable, optional
         Maps ``(filtered_row (K,), order (K,))`` to a position weight. Defaults
         to a probability-weighted long of the highest-mean state.
@@ -129,7 +128,7 @@ def walk_forward_backtest(
     BacktestResult
         Realised strategy returns and diagnostics over the out-of-sample span.
     """
-    obs = GaussianHMM._as_2d(observations)
+    obs = np.asarray(observations, dtype=np.float64).ravel()
     asset_returns = np.asarray(asset_returns, dtype=np.float64).ravel()
     n_obs = obs.shape[0]
     if asset_returns.shape[0] != n_obs:
@@ -154,15 +153,15 @@ def walk_forward_backtest(
 
         # Refit on the trailing window ending just before this OOS block.
         train = obs[start - train_size : start]
-        model = fit_multistart(
-            train, n_states, rng, n_starts=n_starts
-        ).model
+        model = GaussianHMM(
+            n_states=n_states, n_init=n_starts, random_state=rng
+        ).fit(train)
         order = align_states_by_mean(model)
 
         # Filter the block *including* history up to each point. We filter the
         # full sequence up to `stop` and read the causal rows in [start, stop).
-        block = obs[: stop]
-        filtered, _ = model.filter(block)
+        block = obs[:stop]
+        filtered = model.filter(block)
 
         for t in range(start, stop):
             weight = position_rule(filtered[t], order)

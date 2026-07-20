@@ -107,8 +107,14 @@ def log_forward(
     log_alpha[0] = log_startprob + log_emission[0]
     for t in range(1, n_obs):
         # For each destination state j, logsumexp over the source state i.
-        log_alpha[t] = log_emission[t] + logsumexp(
-            log_alpha[t - 1][:, None] + log_transmat, axis=0
+        # Inlined max-trick logsumexp (an order of magnitude faster than a
+        # per-step scipy call on long sequences); robust to all-(-inf) columns.
+        a = log_alpha[t - 1][:, None] + log_transmat        # (K, K)
+        mx = a.max(axis=0)                                   # (K,)
+        safe = np.where(np.isfinite(mx), mx, 0.0)
+        summed = np.exp(a - safe).sum(axis=0)                # (K,)
+        log_alpha[t] = log_emission[t] + np.where(
+            np.isfinite(mx), safe + np.log(summed), -np.inf
         )
 
     loglik = float(logsumexp(log_alpha[-1]))
@@ -145,10 +151,12 @@ def log_backward(
     log_beta[-1] = 0.0
     for t in range(n_obs - 2, -1, -1):
         # For each source state i, logsumexp over the destination state j.
-        log_beta[t] = logsumexp(
-            log_transmat + (log_emission[t + 1] + log_beta[t + 1])[None, :],
-            axis=1,
-        )
+        # Inlined max-trick logsumexp (see log_forward); robust to -inf rows.
+        a = log_transmat + (log_emission[t + 1] + log_beta[t + 1])[None, :]  # (K, K)
+        mx = a.max(axis=1)                                    # (K,)
+        safe = np.where(np.isfinite(mx), mx, 0.0)
+        summed = np.exp(a - safe[:, None]).sum(axis=1)        # (K,)
+        log_beta[t] = np.where(np.isfinite(mx), safe + np.log(summed), -np.inf)
     return log_beta
 
 
