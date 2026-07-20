@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "regime_switching"
+version = "0.1.0"
+description = "Markov regime-switching (Gaussian HMM) analysis of financial returns, implemented from scratch."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Tommaso Pongiluppi" }]
+keywords = ["hmm", "markov", "regime-switching", "finance", "quantitative"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+dependencies = [
+    "numpy>=1.23",
+    "scipy>=1.9",
+    "pandas>=1.5",
+    "duckdb>=0.9",
+    "matplotlib>=3.6",
+    "yfinance>=0.2",
+    "pyarrow>=12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "statsmodels>=0.14",
+    "ruff>=0.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/tommasopongiluppi/markov-regime-switching"
+Repository = "https://github.com/tommasopongiluppi/markov-regime-switching"
+
+[tool.setuptools.packages.find]
+include = ["regime_switching*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "network: tests that require network access (deselected by default)",
+]
+addopts = "-m 'not network'"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
