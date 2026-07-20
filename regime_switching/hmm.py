@@ -15,7 +15,7 @@ import logging
 
 import numpy as np
 
-from .inference import backward, forward, log_gamma, viterbi
+from .inference import filtered_log_probs, log_backward, log_forward, log_gamma, viterbi
 
 __all__ = ["GaussianHMM", "gaussian_logpdf"]
 
@@ -178,7 +178,7 @@ class GaussianHMM:
             Sequence log-likelihood.
         """
         log_b = self.log_emission(x)
-        _, loglik = forward(np.log(self.startprob), np.log(self.transmat), log_b)
+        _, loglik = log_forward(np.log(self.startprob), np.log(self.transmat), log_b)
         return loglik
 
     def filter(self, x: np.ndarray) -> tuple[np.ndarray, float]:
@@ -200,12 +200,11 @@ class GaussianHMM:
             Sequence log-likelihood.
         """
         log_b = self.log_emission(x)
-        log_alpha, loglik = forward(
+        log_alpha, loglik = log_forward(
             np.log(self.startprob), np.log(self.transmat), log_b
         )
         # normalise each row: P(S_t | x_1..t) = softmax over states of alpha_t
-        log_norm = log_alpha - _logsumexp_rows(log_alpha)
-        return np.exp(log_norm), loglik
+        return np.exp(filtered_log_probs(log_alpha)), loglik
 
     def predict_proba(self, x: np.ndarray) -> np.ndarray:
         """Smoothed posterior probabilities ``P(S_t | x_1, ..., x_T)``.
@@ -224,8 +223,8 @@ class GaussianHMM:
             Smoothed posteriors, shape ``(T, K)``. Rows sum to 1.
         """
         log_b = self.log_emission(x)
-        log_a, _ = forward(np.log(self.startprob), np.log(self.transmat), log_b)
-        log_be = backward(np.log(self.transmat), log_b)
+        log_a, _ = log_forward(np.log(self.startprob), np.log(self.transmat), log_b)
+        log_be = log_backward(np.log(self.transmat), log_b)
         return np.exp(log_gamma(log_a, log_be))
 
     def predict(self, x: np.ndarray) -> np.ndarray:
@@ -283,10 +282,3 @@ class GaussianHMM:
         return (
             f"GaussianHMM(n_states={self.n_states}, n_dim={self.n_dim})"
         )
-
-
-def _logsumexp_rows(log_x: np.ndarray) -> np.ndarray:
-    """Row-wise ``logsumexp`` keeping dims, shape ``(T, 1)``."""
-    from scipy.special import logsumexp
-
-    return logsumexp(log_x, axis=1, keepdims=True)

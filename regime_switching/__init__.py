@@ -15,17 +15,27 @@ from .chain import (
 )
 from .estimation import EMResult, fit_baum_welch, fit_multistart
 from .hmm import GaussianHMM, gaussian_logpdf
-from .inference import backward, forward, log_gamma, log_xi, viterbi
+from .inference import (
+    filtered_log_probs,
+    gaussian_log_emission,
+    log_backward,
+    log_forward,
+    log_gamma,
+    log_xi,
+    viterbi,
+)
 
 __version__ = "0.1.0"
 
 __all__ = [
     "__version__",
     # inference
-    "forward",
-    "backward",
+    "gaussian_log_emission",
+    "log_forward",
+    "log_backward",
     "log_gamma",
     "log_xi",
+    "filtered_log_probs",
     "viterbi",
     # model
     "GaussianHMM",

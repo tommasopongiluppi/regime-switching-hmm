@@ -20,7 +20,7 @@ import numpy as np
 from scipy.special import logsumexp
 
 from .hmm import GaussianHMM, gaussian_logpdf
-from .inference import backward, forward, log_gamma, log_xi
+from .inference import log_backward, log_forward, log_gamma, log_xi
 
 __all__ = ["EMResult", "fit_baum_welch", "fit_multistart"]
 
@@ -136,10 +136,10 @@ def fit_baum_welch(
     for it in range(1, max_iter + 1):
         # ---- E-step ---------------------------------------------------------
         log_b = gaussian_logpdf(x, means, covars)
-        log_a, loglik = forward(np.log(startprob), np.log(transmat), log_b)
-        log_be = backward(np.log(transmat), log_b)
+        log_a, loglik = log_forward(np.log(startprob), np.log(transmat), log_b)
+        log_be = log_backward(np.log(transmat), log_b)
         lgamma = log_gamma(log_a, log_be)           # (T, K)
-        lxi = log_xi(log_a, log_be, np.log(transmat), log_b, loglik)  # (T-1, K, K)
+        lxi = log_xi(log_a, log_be, np.log(transmat), log_b)  # (T-1, K, K)
 
         gamma = np.exp(lgamma)
         history.append(loglik)
