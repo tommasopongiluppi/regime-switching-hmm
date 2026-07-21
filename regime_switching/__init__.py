@@ -6,11 +6,17 @@ All core algorithms are implemented from scratch in NumPy/SciPy.
 from __future__ import annotations
 
 from .chain import (
-    expected_durations,
-    is_ergodic,
+    absorption_probabilities,
+    expected_duration,
+    expected_hitting_times,
+    expected_return_time,
+    expected_steps_to_absorption,
+    is_aperiodic,
     is_irreducible,
-    mean_first_passage_times,
-    n_step_transition,
+    n_step,
+    relaxation_time,
+    second_eigenvalue_modulus,
+    simulate,
     stationary_distribution,
 )
 from .estimation import EMResult, fit_em, fit_em_single
@@ -45,9 +51,15 @@ __all__ = [
     "fit_em_single",
     # chain analytics
     "stationary_distribution",
-    "expected_durations",
-    "n_step_transition",
-    "mean_first_passage_times",
+    "expected_duration",
+    "expected_return_time",
+    "n_step",
+    "second_eigenvalue_modulus",
+    "relaxation_time",
+    "expected_hitting_times",
+    "absorption_probabilities",
+    "expected_steps_to_absorption",
     "is_irreducible",
-    "is_ergodic",
+    "is_aperiodic",
+    "simulate",
 ]

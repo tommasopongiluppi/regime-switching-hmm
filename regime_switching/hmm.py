@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .chain import expected_durations
+from .chain import expected_duration
 from .estimation import fit_em
 from .inference import (
     filtered_log_probs,
@@ -448,7 +448,7 @@ class GaussianHMM:
             of state ``i`` is ``1 / (1 - transmat_[i, i])`` time steps.
         """
         self._check_fitted()
-        durations = expected_durations(self.transmat_)
+        durations = expected_duration(self.transmat_)
         lines = [
             f"GaussianHMM(n_states={self.n_states})  "
             f"loglik={self.loglik_:.4f}  converged={self.converged_}",

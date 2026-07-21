@@ -25,7 +25,7 @@ import numpy as np  # noqa: E402
 
 from regime_switching.backtest import walk_forward_backtest  # noqa: E402
 from regime_switching.chain import (  # noqa: E402
-    expected_durations,
+    expected_duration,
     stationary_distribution,
 )
 from regime_switching.data import (  # noqa: E402
@@ -86,7 +86,7 @@ def main() -> None:
     logger.info("\n%s", model.summary())
 
     pi = stationary_distribution(model.transmat_)
-    dur = expected_durations(model.transmat_)
+    dur = expected_duration(model.transmat_)
     logger.info("stationary distribution: %s", np.round(pi, 3))
     logger.info("expected durations (days): %s", np.round(dur, 1))
 
