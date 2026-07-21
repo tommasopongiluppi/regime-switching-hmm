@@ -23,7 +23,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
-from regime_switching.backtest import walk_forward_backtest  # noqa: E402
+from regime_switching.backtest import (  # noqa: E402
+    benchmarks,
+    compare,
+    regime_strategy,
+    walk_forward_regimes,
+)
 from regime_switching.chain import (  # noqa: E402
     expected_duration,
     stationary_distribution,
@@ -35,7 +40,6 @@ from regime_switching.data import (  # noqa: E402
     engineer_features,
 )
 from regime_switching.hmm import GaussianHMM  # noqa: E402
-from regime_switching.metrics import summary  # noqa: E402
 from regime_switching.plots import (  # noqa: E402
     plot_equity_curves,
     plot_regime_probabilities,
@@ -62,7 +66,6 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")
     args = parse_args()
-    rng = np.random.default_rng(args.seed)
 
     Path(args.db).parent.mkdir(parents=True, exist_ok=True)
     figdir = Path(args.figdir)
@@ -95,20 +98,20 @@ def main() -> None:
 
     smoothed = model.predict_proba(log_returns)  # non-causal, for plotting only
 
-    # 3. walk-forward backtest on filtered (causal) probabilities
-    bt = walk_forward_backtest(
+    # 3. walk-forward regime detection (causal) and strategy vs benchmarks
+    wf = walk_forward_regimes(
         log_returns,
-        log_returns,
-        args.states,
-        rng,
-        train_size=args.train_size,
-        step=args.step,
-        dates=dates,
+        dates,
+        n_states=args.states,
+        train_window=args.train_size,
+        refit_every=args.step,
+        random_state=args.seed,
     )
-    strat = summary(bt.strategy_returns)
-    bh = summary(bt.asset_returns)
-    logger.info("strategy: %s", {k: round(v, 4) for k, v in strat.items()})
-    logger.info("buy&hold: %s", {k: round(v, 4) for k, v in bh.items()})
+    prob_cols = [f"p_state_{k}" for k in range(args.states)]
+    strat = regime_strategy(feats, wf[prob_cols], mode="probability")
+    bench = benchmarks(log_returns, feats, avg_exposure=float(strat["position"].mean()))
+    table = compare(strat, bench)
+    logger.info("performance comparison:\n%s", table.round(4).to_string())
 
     # 4. figures
     fig, ax = plt.subplots(figsize=(11, 4))
@@ -121,8 +124,12 @@ def main() -> None:
 
     fig, ax = plt.subplots(figsize=(11, 4))
     plot_equity_curves(
-        {"strategy": bt.strategy_returns, "buy & hold": bt.asset_returns},
-        dates=bt.dates,
+        {
+            "strategy": strat["net"].to_numpy(),
+            "buy & hold": bench["buy_and_hold"].to_numpy(),
+            "vol target": bench["vol_target"].to_numpy(),
+        },
+        dates=wf.index.to_numpy(),
         ax=ax,
     )
     fig.savefig(figdir / "equity_curves.png", dpi=120, bbox_inches="tight")
