@@ -135,11 +135,15 @@ def run_pipeline(
 ) -> dict:
     """Run steps 2-7 on an already-built database. Deterministic given ``seed``.
 
+    The walk-forward comparison (strategy and all benchmarks) is evaluated only
+    from the first refit date onwards, i.e. from observation ``train_window``.
+
     Returns
     -------
     dict
         ``summary_table`` (the strategy-vs-benchmark comparison), ``bic`` (dict
-        K -> BIC), ``chain`` (analytics dict), and ``model`` (the fitted HMM).
+        K -> BIC), ``chain`` (analytics dict), ``model`` (the fitted HMM), and
+        ``eval_period`` (``(first_date, last_date, n_obs)`` of the comparison).
     """
     feats = engineer_features(db_path, market=market, vol_window=vol_window, z_window=z_window)
     log_returns = feats["log_return"].to_numpy()
@@ -173,11 +177,21 @@ def run_pipeline(
         refit_every=refit_every, n_init=n_init, random_state=seed,
     )
     prob_cols = [f"p_state_{k}" for k in range(n_states)]
-    strat = regime_strategy(feats, wf[prob_cols], mode="probability")
+    # Fair comparison: evaluate the strategy AND every benchmark only from the
+    # first refit date onwards. Before that date the strategy cannot hold a
+    # position (no model has been fitted yet), so including the warm-up would
+    # credit the benchmarks with a period in which the strategy is not allowed
+    # to compete. All rolling features are causal, so slicing rows is enough.
+    eval_start = train_window
+    eval_feats = feats.iloc[eval_start:]
+    eval_returns = log_returns[eval_start:]
+    eval_wf = wf.iloc[eval_start:]
+    strat = regime_strategy(eval_feats, eval_wf[prob_cols], mode="probability")
     bench = benchmarks(
-        log_returns, feats, avg_exposure=float(strat["position"].mean())
+        eval_returns, eval_feats, avg_exposure=float(strat["position"].mean())
     )
     table = compare(strat, bench, periods_per_year=periods_per_year)
+    eval_period = (eval_feats.index.min(), eval_feats.index.max(), len(eval_feats))
 
     # 6. figures + results CSV
     outdir = Path(outdir)
@@ -207,7 +221,7 @@ def run_pipeline(
                     "vol target": bench["vol_target"].to_numpy(),
                     "constant exposure": bench["constant_exposure"].to_numpy(),
                 },
-                dates=wf.index.to_numpy(),
+                dates=eval_wf.index.to_numpy(),
             ),
             figdir / "equity_curves.png",
         )
@@ -217,10 +231,18 @@ def run_pipeline(
         )
 
     # 7. report
-    report = format_report(market, feats, model, chain_stats, bic, best_k, table)
+    report = format_report(
+        market, feats, model, chain_stats, bic, best_k, table, eval_period
+    )
     logger.info("\n%s", report)
 
-    return {"summary_table": table, "bic": bic, "chain": chain_stats, "model": model}
+    return {
+        "summary_table": table,
+        "bic": bic,
+        "chain": chain_stats,
+        "model": model,
+        "eval_period": eval_period,
+    }
 
 
 def _save(fig, path: Path) -> None:
@@ -228,7 +250,7 @@ def _save(fig, path: Path) -> None:
     plt.close(fig)
 
 
-def format_report(market, feats, model, chain_stats, bic, best_k, table) -> str:
+def format_report(market, feats, model, chain_stats, bic, best_k, table, eval_period) -> str:
     """A short, plain-text summary of the run."""
     lines = [
         "=" * 70,
@@ -252,7 +274,9 @@ def format_report(market, feats, model, chain_stats, bic, best_k, table) -> str:
         "BIC by K: " + ", ".join(f"K={k}:{v:.0f}" for k, v in bic.items())
         + f"  => selects K={best_k}",
         "",
-        "Walk-forward strategy vs benchmarks (net of costs):",
+        "Walk-forward strategy vs benchmarks (net of costs), evaluated from the",
+        f"first refit date: {eval_period[0]} .. {eval_period[1]} "
+        f"({eval_period[2]} observations):",
     ]
     for col in table.columns:
         row = table[col]

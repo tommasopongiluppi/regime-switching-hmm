@@ -126,9 +126,8 @@ def test_variance_floor_prevents_blowup():
 # --------------------------------------------------------------------------- #
 # cross-check
 # --------------------------------------------------------------------------- #
-@pytest.mark.xfail(raises=ImportError, reason="statsmodels not installed")
 def test_cross_check_loglik_vs_statsmodels():
-    import statsmodels.api as sm
+    sm = pytest.importorskip("statsmodels.api")
 
     x, _ = _simulate(
         4000, [0.0005, -0.001], [0.008, 0.025], [[0.98, 0.02], [0.06, 0.94]], seed=5

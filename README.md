@@ -1,14 +1,14 @@
-# regime_switching
+# Market regime detection with a hidden Markov model
 
 [![CI](https://github.com/tommasopongiluppi/regime-switching-hmm/actions/workflows/ci.yml/badge.svg)](https://github.com/tommasopongiluppi/regime-switching-hmm/actions/workflows/ci.yml)
 
-Markov regime-switching analysis of daily equity index returns with a Gaussian hidden Markov model, implemented from scratch in NumPy and SciPy.
+Markov regime-switching analysis of daily equity index returns with a Gaussian hidden Markov model, implemented from scratch in NumPy and SciPy. The Python package is `regime_switching`.
 
 ## Summary
 
 This project fits a two-state Gaussian hidden Markov model (HMM) to daily log returns of the S&P 500 and asks two questions: what regimes does the model find, and does knowing the regime in real time help a simple trading rule. The forward-backward recursions, Viterbi decoding, Baum-Welch estimation and Markov chain analytics are written in NumPy and SciPy. No HMM library is used inside the package. A test suite checks the inference code against brute-force enumeration of every state path, and checks the estimator against simulated data with known parameters and against statsmodels.
 
-On 4,778 trading days from 2005-01-06 to 2023-12-29 the model separates a calm regime (daily standard deviation 0.0067, positive mean) from a turbulent one (daily standard deviation 0.0206, negative mean). In a walk-forward backtest, a rule that scales exposure by the filtered probability of the calm regime earns a Sharpe ratio of 0.34 net of costs, against 0.53 for a volatility-targeting benchmark and 0.38 for buy and hold. None of the Sharpe differences is statistically distinguishable from zero at conventional levels. On this sample the regime model does not add anything over inverse-volatility scaling, and that is the result reported here.
+On 4,778 trading days from 2005-01-06 to 2023-12-29 the model separates a calm regime (daily standard deviation 0.0067, positive mean) from a turbulent one (daily standard deviation 0.0206, negative mean). In a walk-forward backtest evaluated from 2008-01-09 onwards, a rule that scales exposure by the filtered probability of the calm regime earns a Sharpe ratio of 0.37 net of costs, against 0.54 for a volatility-targeting benchmark and 0.37 for buy and hold. None of the Sharpe differences is statistically distinguishable from zero at conventional levels. On this sample the regime model does not add anything over inverse-volatility scaling, and that is the result reported here.
 
 ## Model
 
@@ -57,7 +57,7 @@ Prices come from Yahoo Finance through yfinance and are cached to parquet per ti
 
 The backtest refits the model on an expanding window every 63 trading days, starting once 756 observations (about three years) are available, which gave 64 refits here. At each refit the filtered probability at the last available close is held fixed for the following block. The position applied to the return of day t is the signal formed at the close of day t - 1. This one-day shift is enforced by an assertion in the code, and a test checks that the position column equals the lagged signal exactly. Exposure equals the held probability of the calm regime, capped at one, and transaction costs of 5 basis points are charged on every unit of turnover.
 
-Three benchmarks are computed net of the same costs: buy and hold; volatility targeting, where exposure is 10% annualised divided by trailing 21-day realised volatility, capped at one and lagged one day; and a constant exposure equal to the strategy's average exposure, which separates the timing of the strategy from its average leverage. The comparison table reports standard performance statistics and the Jobson-Korkie test with Memmel's correction for the difference between the strategy's Sharpe ratio and each benchmark's. That test accounts for the correlation between the two return series.
+Three benchmarks are computed net of the same costs: buy and hold; volatility targeting, where exposure is 10% annualised divided by trailing 21-day realised volatility, capped at one and lagged one day; and a constant exposure equal to the strategy's average exposure, which separates the timing of the strategy from its average leverage. The comparison table reports standard performance statistics and the Jobson-Korkie test with Memmel's correction for the difference between the strategy's Sharpe ratio and each benchmark's. That test accounts for the correlation between the two return series. The strategy and all three benchmarks are evaluated over the same window, from the first refit date onwards, so the benchmarks are not credited with the warm-up period in which the strategy cannot yet hold a position.
 
 ## Verification
 
@@ -115,7 +115,7 @@ Four long-running tests (the three heaviest estimation tests and the end-to-end 
 
 ## Results
 
-All numbers below come from one run of `scripts/run_analysis.py` on 2026-11-03 with default settings: S&P 500 (^GSPC) and VIX (^VIX) from Yahoo Finance, 2005-01-06 to 2023-12-29, 4,778 daily log returns after the feature warm-up, seed 20260721, 10 EM starts per fit. The run took 49 minutes on a laptop. Yahoo may revise historical prices, so a later download can differ slightly.
+All numbers below come from one run of `scripts/run_analysis.py` on 2026-11-03 with default settings: S&P 500 (^GSPC) and VIX (^VIX) from Yahoo Finance, 2005-01-06 to 2023-12-29, 4,778 daily log returns after the feature warm-up, seed 20260721, 10 EM starts per fit. The run took 59 minutes on a laptop. Yahoo may revise historical prices, so a later download can differ slightly.
 
 ### Fitted two-state model
 
@@ -151,41 +151,41 @@ The figure shows the S&P 500 level with red shading whose opacity is the filtere
 
 ### Walk-forward results versus the benchmarks
 
-All series are net of 5 basis points per unit of turnover and cover the full 4,778-day sample. The strategy holds no position during the first 756 days while the first training window accumulates. The constant-exposure benchmark is buy and hold scaled to the strategy's average exposure of 0.62, so its Sharpe ratio equals buy and hold's by construction.
+All four series are net of 5 basis points per unit of turnover and are evaluated over the same period, from the first refit date 2008-01-09 to 2023-12-29 (4,022 trading days). The 756 days before the first refit are the training window for the first model fit and are excluded for every series. The constant-exposure benchmark is buy and hold scaled to the strategy's average exposure of 0.74, so its Sharpe ratio equals buy and hold's by construction.
 
 | | Strategy | Buy and hold | Vol target | Constant exposure |
 | --- | ---: | ---: | ---: | ---: |
-| CAGR | +3.68% | +5.57% | +4.99% | +3.90% |
-| Annualised vol | 13.0% | 19.5% | 10.2% | 12.1% |
-| Sharpe | 0.34 | 0.38 | 0.53 | 0.38 |
-| Sortino | 0.46 | 0.52 | 0.72 | 0.52 |
-| Max drawdown | -35.7% | -61.0% | -28.1% | -43.0% |
-| Calmar | 0.10 | 0.09 | 0.18 | 0.09 |
-| Hit rate | 45.5% | 54.4% | 54.2% | 54.4% |
-| Skew | -1.13 | -0.52 | -0.63 | -0.52 |
-| Excess kurtosis | 30.7 | 12.9 | 2.1 | 12.9 |
-| JK-Memmel z vs strategy | | -0.19 | -1.10 | -0.19 |
-| JK-Memmel p-value | | 0.848 | 0.270 | 0.848 |
+| CAGR | +4.39% | +5.67% | +5.15% | +4.59% |
+| Annualised vol | 14.2% | 20.5% | 10.2% | 15.2% |
+| Sharpe | 0.37 | 0.37 | 0.54 | 0.37 |
+| Sortino | 0.51 | 0.51 | 0.74 | 0.51 |
+| Max drawdown | -35.7% | -56.8% | -21.7% | -45.2% |
+| Calmar | 0.12 | 0.10 | 0.24 | 0.10 |
+| Hit rate | 54.0% | 54.1% | 53.9% | 54.1% |
+| Skew | -1.05 | -0.52 | -0.64 | -0.52 |
+| Excess kurtosis | 25.4 | 12.2 | 2.2 | 12.2 |
+| JK-Memmel z vs strategy | | +0.01 | -1.02 | +0.01 |
+| JK-Memmel p-value | | 0.990 | 0.307 | 0.990 |
 
 ![Cumulative performance and drawdowns of the strategy and the three benchmarks](docs/us_equity_curves.png)
 
 What the table says:
 
-- The volatility-targeting benchmark has the highest Sharpe ratio (0.53) and the smallest maximum drawdown (-28.1%). The regime strategy has the lowest Sharpe ratio of the four (0.34).
-- The strategy's drawdown (-35.7%) is smaller than buy and hold's (-61.0%) and the constant-exposure benchmark's (-43.0%), because it was mostly out of the market in 2008 and 2009. The equity figure shows it flat until early 2008 and then largely flat through the crash.
-- The Sharpe difference against volatility targeting has a p-value of 0.270 and against buy and hold 0.848. Neither comes close to rejecting equal Sharpe ratios, so the honest statement is that the strategy is not distinguishable from the benchmarks on this sample, and the point estimates favour volatility targeting.
-- The strategy's excess kurtosis (30.7) is far above the benchmarks'. The equity figure shows why: it was largely invested going into the February to March 2020 fall and took most of that loss in a few days, while the volatility-targeting benchmark cut exposure as realised volatility rose and lost less.
+- The volatility-targeting benchmark has the highest Sharpe ratio (0.54) and the smallest maximum drawdown (-21.7%). The regime strategy's Sharpe ratio (0.37) is level with buy and hold and constant exposure (0.37); the Jobson-Korkie-Memmel test against buy and hold gives z = +0.01, p = 0.990.
+- The Sharpe difference against volatility targeting has p = 0.307. Neither comparison comes close to rejecting equal Sharpe ratios, so the strategy is not distinguishable from the benchmarks on this sample, and the point estimates favour volatility targeting.
+- On compounded return the strategy (+4.39% a year) is the lowest of the four over this window, below constant exposure (+4.59%) at the same average exposure of 0.74. Its timing cost return relative to simply holding that exposure.
+- The strategy's maximum drawdown (-35.7%) is smaller than buy and hold's (-56.8%) and constant exposure's (-45.2%). The first refit, in January 2008, put the probability of the calm regime at 0.001, so the strategy was essentially out of the market through the 2008 to 2009 fall. The equity figure shows its line flat for most of 2008 and 2009 while buy and hold loses more than half.
+- The strategy's own worst drawdown came in 2020, not 2009. Its excess kurtosis (25.4) is far above the benchmarks' because it was largely invested going into the February to March 2020 fall and took most of that loss in a few days, while the volatility-targeting benchmark cut exposure as realised volatility rose and lost less.
 
 ## Limitations
 
 - Price indices exclude dividends. The S&P 500 price index understates the return to holding by roughly 1.5 percentage points a year, which flatters every strategy measured against buy and hold. The European configuration (EURO STOXX 50, VSTOXX) is affected more and is not reported here.
-- The comparison covers the full sample, including the first 756 days in which the strategy holds nothing while the benchmarks are invested. This lowers the strategy's CAGR relative to the benchmarks. Restricting all series to the period after the first refit would be the fairer comparison and is not done in the current pipeline.
 - Returns are modelled as Gaussian within each state. Daily returns have heavier tails than a two-component Gaussian mixture captures, and the BIC preference for K = 4 reflects that.
 - The strategy return is computed as position times the daily log return. For a position between zero and one this is a close approximation to the simple return but not identical.
 - Costs are a flat 5 basis points per unit of turnover. There is no slippage model, no financing cost and no borrowing constraint beyond a cap of one on exposure.
 - The Sharpe standard error assumes independent returns and the Jobson-Korkie-Memmel test is asymptotic. Both understate uncertainty when returns are autocorrelated or fat-tailed.
 - One market, one asset, one set of default parameters. No parameter search was run, which avoids selection bias but also means the result is a single configuration.
-- The time loop in the forward and backward passes is Python, vectorised only across states. The full pipeline took 49 minutes, dominated by the walk-forward refits.
+- The time loop in the forward and backward passes is Python, vectorised only across states. The full pipeline took 59 minutes, dominated by the walk-forward refits.
 - The data come from Yahoo Finance and are not an audited source.
 
 ## How to reproduce
@@ -211,12 +211,12 @@ Outputs:
 - `data/us.duckdb` and the parquet cache.
 - A plain-text report on standard output.
 
-The run is deterministic given the seed (`--seed`, default 20260721). It took 49 minutes here. For an offline run that exercises the whole pipeline on a simulated two-regime series, pass `--synthetic`. `scripts/compare_markets.py` runs both market configurations and `scripts/study_chains.py` prints worked Markov-chain examples.
+The run is deterministic given the seed (`--seed`, default 20260721). It took 59 minutes here. For an offline run that exercises the whole pipeline on a simulated two-regime series, pass `--synthetic`. `scripts/compare_markets.py` runs both market configurations and `scripts/study_chains.py` prints worked Markov-chain examples.
 
 Tests:
 
 ```bash
-pytest                    # default: 49 passed, 1 xpassed, 5 deselected, 76 s here
+pytest                    # default: 50 passed, 5 deselected, 85 s here
 pytest -m slow            # the four long tests, about 35 minutes
 pytest -m "not network"   # fast and slow together
 ```
