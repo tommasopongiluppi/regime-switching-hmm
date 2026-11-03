@@ -37,8 +37,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/tommasopongiluppi/markov-regime-switching"
-Repository = "https://github.com/tommasopongiluppi/markov-regime-switching"
+Homepage = "https://github.com/tommasopongiluppi/regime-switching-hmm"
+Repository = "https://github.com/tommasopongiluppi/regime-switching-hmm"
 
 [tool.setuptools.packages.find]
 include = ["regime_switching*"]
