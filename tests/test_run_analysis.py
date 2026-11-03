@@ -10,6 +10,7 @@ import importlib.util
 import pathlib
 
 import pandas as pd
+import pytest
 
 from regime_switching.data import build_database
 
@@ -25,6 +26,7 @@ def _load_run_analysis():
     return mod
 
 
+@pytest.mark.slow
 def test_run_analysis_is_deterministic(tmp_path):
     ra = _load_run_analysis()
 

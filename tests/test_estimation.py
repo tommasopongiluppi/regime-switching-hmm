@@ -34,6 +34,7 @@ def _simulate(n, means, sds, transmat, seed):
 # --------------------------------------------------------------------------- #
 # headline test
 # --------------------------------------------------------------------------- #
+@pytest.mark.slow
 def test_simulate_and_recover():
     """The estimator works: fit T=50000 from known parameters and recover them.
 
@@ -86,6 +87,7 @@ def test_loglik_monotone_every_start():
         assert np.all(diffs >= -1e-6 * np.abs(trace[:-1])), "loglik decreased"
 
 
+@pytest.mark.slow
 def test_label_switching_is_resolved():
     x, _ = _simulate(
         5000, [0.0005, -0.001], [0.008, 0.025], [[0.98, 0.02], [0.06, 0.94]], seed=3
@@ -171,6 +173,7 @@ def test_save_load_roundtrip(tmp_path):
     assert np.isclose(loaded.score(x), model.score(x))
 
 
+@pytest.mark.slow
 def test_bic_selects_true_k():
     x, _ = _simulate(
         6000, [0.0005, -0.001], [0.008, 0.025], [[0.98, 0.02], [0.06, 0.94]], seed=9

@@ -27,6 +27,18 @@ pip install -e ".[dev]"
 | `metrics.py` | Performance statistics and Sharpe difference tests |
 | `plots.py` | Figures |
 
+## Testing
+
+```bash
+pytest            # default: fast tests only (about 2 minutes)
+pytest -m slow    # the four slow tests (about 35 minutes)
+pytest -m "not network"   # fast and slow tests together
+```
+
+Tests marked `slow` (long multi-start EM fits and the end-to-end pipeline
+determinism check) and tests marked `network` are deselected by default so
+local runs and CI stay quick. Run the slow set before a release.
+
 ## Status
 
 Placeholder README. Usage examples and results to follow.

@@ -47,8 +47,9 @@ include = ["regime_switching*"]
 testpaths = ["tests"]
 markers = [
     "network: tests that require network access (deselected by default)",
+    "slow: tests that take a minute or more (deselected by default; run with -m slow)",
 ]
-addopts = "-m 'not network'"
+addopts = "-m 'not network and not slow'"
 
 [tool.ruff]
 line-length = 100
